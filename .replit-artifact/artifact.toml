@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Circuit Sim V0.1"
+version = "1.0.0"
+id = "artifacts/circuit-sim"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18233
+
+[services.development]
+run = "pnpm --filter @workspace/circuit-sim run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/circuit-sim", "run", "build" ]
+publicDir = "artifacts/circuit-sim/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18233"
+BASE_PATH = "/"

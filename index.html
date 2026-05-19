@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no"/>
+  <title>Circuit Sim V0.1</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Courier New', Courier, monospace;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    /* ── Toolbar: 2 rows ── */
+    #toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px 8px;
+      background: #161b22;
+      border-bottom: 2px solid #30363d;
+      flex-shrink: 0;
+    }
+    .tb-row { display: flex; gap: 5px; }
+
+    button {
+      min-height: 42px;
+      padding: 6px 8px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: #21262d;
+      color: #e6edf3;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      flex: 1;
+      min-width: 0;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    button:active    { background: #2d333b; }
+    button.active    { background: #1f6feb; border-color: #388bfd; color: #fff; }
+    #run-btn         { background: #1a4129; border-color: #2ea043; color: #56d364; }
+    #run-btn:active  { background: #2ea043; color: #fff; }
+    #clear-btn       { background: #2a1515; border-color: #6e3028; color: #f85149; }
+    #clear-btn:active{ background: #6e3028; }
+
+    /* ── Canvas area ── */
+    #canvas-wrap { flex: 1; overflow: hidden; position: relative; }
+    canvas { display: block; width: 100%; height: 100%; }
+
+    /* ── Message bar ── */
+    #msg-bar {
+      padding: 8px 14px;
+      background: #161b22;
+      border-top: 2px solid #30363d;
+      min-height: 44px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #8b949e;
+      flex-shrink: 0;
+      max-height: 72px;
+      overflow-y: auto;
+      word-break: break-word;
+    }
+    #msg-bar.error   { color: #f85149; }
+    #msg-bar.success { color: #56d364; }
+    #msg-bar.info    { color: #79c0ff; }
+    #msg-bar.warn    { color: #e3b341; }
+
+    /* ── Edit panel overlay ── */
+    #edit-panel {
+      display: none;
+      position: absolute;
+      top: 12px; right: 12px;
+      width: 210px;
+      background: #1c2128;
+      border: 1.5px solid #388bfd;
+      border-radius: 10px;
+      padding: 14px;
+      z-index: 10;
+      box-shadow: 0 4px 24px #00000088;
+    }
+    #edit-panel h3 { font-size: 13px; color: #79c0ff; margin-bottom: 10px; }
+    #edit-panel label { font-size: 11px; color: #8b949e; display: block; margin-bottom: 3px; }
+    #edit-panel input {
+      width: 100%; padding: 7px 9px;
+      background: #0d1117; border: 1px solid #30363d;
+      border-radius: 5px; color: #e6edf3;
+      font-family: inherit; font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .ep-btns { display: flex; gap: 7px; }
+    .ep-btns button { min-height: 36px; font-size: 12px; }
+    #ep-apply { background: #1a4129; border-color: #2ea043; color: #56d364; }
+    #ep-delete { background: #2a1515; border-color: #6e3028; color: #f85149; }
+    #ep-close  { background: #21262d; flex: 0 0 auto; width: 36px; }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <div class="tb-row">
+    <button id="btn-R"  ontouchstart="" onclick="startAdd('R')">＋ R</button>
+    <button id="btn-C"  ontouchstart="" onclick="startAdd('C')">＋ C</button>
+    <button id="btn-L"  ontouchstart="" onclick="startAdd('L')">＋ Inductor</button>
+    <button id="btn-VS" ontouchstart="" onclick="startAdd('VS')">＋ V Source</button>
+    <button id="btn-D"  ontouchstart="" onclick="startAdd('D')">＋ Diode</button>
+  </div>
+  <div class="tb-row">
+    <button id="run-btn"   ontouchstart="" onclick="runSim()">▶ Run Sim</button>
+    <button id="clear-btn" ontouchstart="" onclick="clearCircuit()">✕ Clear</button>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="schematic"></canvas>
+
+  <!-- Edit / delete overlay -->
+  <div id="edit-panel">
+    <h3 id="ep-title">Component</h3>
+    <label id="ep-label">Value</label>
+    <input id="ep-input" type="text" inputmode="decimal"/>
+    <div class="ep-btns">
+      <button id="ep-apply"  ontouchstart="" onclick="applyEdit()">Apply</button>
+      <button id="ep-delete" ontouchstart="" onclick="deleteSelected()">Delete</button>
+      <button id="ep-close"  ontouchstart="" onclick="closeEdit()">✕</button>
+    </div>
+  </div>
+</div>
+
+<div id="msg-bar" class="info">Loading…</div>
+
+<script>
+'use strict';
+
+// ===================================================================
+// MNA SOLVER CORE
+// ===================================================================
+
+/**
+ * Gaussian elimination with partial pivoting.
+ * Throws 'Floating node detected' if singular.
+ */
+function gaussElim(A, b) {
+  const n = b.length;
+  for (let col = 0; col < n; col++) {
+    let pivRow = col, pivVal = Math.abs(A[col][col]);
+    for (let r = col+1; r < n; r++) {
+      const v = Math.abs(A[r][col]);
+      if (v > pivVal) { pivVal = v; pivRow = r; }
+    }
+    if (pivRow !== col) {
+      [A[col], A[pivRow]] = [A[pivRow], A[col]];
+      [b[col], b[pivRow]] = [b[pivRow], b[col]];
+    }
+    if (Math.abs(A[col][col]) < 1e-14) throw new Error('Floating node detected');
+    for (let r = col+1; r < n; r++) {
+      const f = A[r][col] / A[col][col];
+      for (let k = col; k < n; k++) A[r][k] -= f * A[col][k];
+      b[r] -= f * b[col];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n-1; i >= 0; i--) {
+    let s = b[i];
+    for (let j = i+1; j < n; j++) s -= A[i][j] * x[j];
+    x[i] = s / A[i][i];
+  }
+  return x;
+}
+
+/**
+ * MNA solver.
+ * Handles augmented matrix for voltage sources.
+ * Uses Newton-Raphson for nonlinear elements (diode).
+ *
+ * x[0..nNodes-1]          = node voltages (nodes 1..nNodes)
+ * x[nNodes..nNodes+nVS-1] = voltage-source branch currents
+ */
+class MNASolver {
+  constructor(nNodes, nVS) {
+    this.nNodes = nNodes;
+    this.nVS    = nVS;
+    this.size   = nNodes + nVS;
+  }
+
+  _buildSystem(components, mode, dt) {
+    const n = this.size;
+    const A = Array.from({length: n}, () => new Array(n).fill(0));
+    const b = new Array(n).fill(0);
+    for (const c of components) {
+      mode === 'dc' ? c.stampDC(A, b, this.nNodes) : c.stampTran(A, b, this.nNodes, dt);
+    }
+    return {A, b};
+  }
+
+  solve(components, mode, dt) {
+    const hasNonlinear = components.some(c => c.isNonlinear);
+    if (!hasNonlinear) {
+      const {A, b} = this._buildSystem(components, mode, dt);
+      return gaussElim(A, b);
+    }
+    // Newton-Raphson for nonlinear circuits
+    let V = new Array(this.size).fill(0);
+    for (const c of components) if (c.updateOp) c.updateOp(V);
+    for (let iter = 0; iter < 100; iter++) {
+      const Vprev = [...V];
+      const {A, b} = this._buildSystem(components, mode, dt);
+      V = gaussElim(A, b);
+      for (const c of components) if (c.updateOp) c.updateOp(V);
+      let maxD = 0;
+      for (let i = 0; i < this.nNodes; i++) maxD = Math.max(maxD, Math.abs(V[i] - Vprev[i]));
+      if (maxD < 1e-9) return V;
+    }
+    throw new Error('Newton-Raphson did not converge');
+  }
+}
+
+// ===================================================================
+// STAMP HELPERS
+// ===================================================================
+
+function stampG(A, G, n1, n2) {
+  if (n1 > 0) A[n1-1][n1-1] += G;
+  if (n2 > 0) A[n2-1][n2-1] += G;
+  if (n1 > 0 && n2 > 0) { A[n1-1][n2-1] -= G; A[n2-1][n1-1] -= G; }
+}
+
+// I flows INTO nPlus, OUT of nMinus
+function stampI(b, I, nPlus, nMinus) {
+  if (nPlus  > 0) b[nPlus-1]  += I;
+  if (nMinus > 0) b[nMinus-1] -= I;
+}
+
+// ===================================================================
+// COMPONENTS
+// ===================================================================
+
+class Resistor {
+  constructor(id, n1, n2, R) {
+    this.id = id; this.n1 = n1; this.n2 = n2;
+    this.R = R; this.type = 'R'; this.isNonlinear = false;
+    this.displayOffX = 0; this.displayOffY = 0;
+  }
+  get G() { return 1 / this.R; }
+  stampDC(A, b, nN)       { stampG(A, this.G, this.n1, this.n2); }
+  stampTran(A, b, nN, dt) { stampG(A, this.G, this.n1, this.n2); }
+  updateState(V) {}
+  setInitialV(V) {}
+}
+
+class Capacitor {
+  constructor(id, n1, n2, C) {
+    this.id = id; this.n1 = n1; this.n2 = n2;
+    this.C = C; this.type = 'C'; this.isNonlinear = false;
+    this.Vold = 0; this.Iold = 0; this._dt = 1e-6;
+    this.displayOffX = 0; this.displayOffY = 0;
+  }
+  setInitialV(V) {
+    const v1 = this.n1 > 0 ? (V[this.n1-1]??0) : 0;
+    const v2 = this.n2 > 0 ? (V[this.n2-1]??0) : 0;
+    this.Vold = v1 - v2; this.Iold = 0;
+  }
+  stampDC(A, b, nN) { /* open circuit in DC */ }
+  stampTran(A, b, nN, dt) {
+    this._dt = dt;
+    const Geq = 2*this.C/dt;
+    const Ieq = Geq*this.Vold + this.Iold;
+    stampG(A, Geq, this.n1, this.n2);
+    stampI(b, Ieq, this.n1, this.n2);
+  }
+  updateState(V) {
+    const v1 = this.n1>0 ? V[this.n1-1] : 0;
+    const v2 = this.n2>0 ? V[this.n2-1] : 0;
+    const Vnew = v1-v2;
+    const Geq  = 2*this.C/this._dt;
+    this.Iold  = Geq*Vnew - (Geq*this.Vold + this.Iold);
+    this.Vold  = Vnew;
+  }
+}
+
+class Inductor {
+  constructor(id, n1, n2, L) {
+    this.id = id; this.n1 = n1; this.n2 = n2;
+    this.L = L; this.type = 'L'; this.isNonlinear = false;
+    this.Iold = 0; this.Vold = 0; this._dt = 1e-6;
+    this.displayOffX = 0; this.displayOffY = 0;
+  }
+  setInitialV(V) { this.Iold = 0; this.Vold = 0; }
+  stampDC(A, b, nN) {
+    // Short circuit in DC: use very small resistance (1µΩ)
+    stampG(A, 1e6, this.n1, this.n2);
+  }
+  stampTran(A, b, nN, dt) {
+    // Trapezoidal companion: Geq = dt/(2L), Ieq = Iold + Geq*Vold
+    this._dt = dt;
+    const Geq = dt / (2*this.L);
+    const Ieq = this.Iold + Geq*this.Vold;
+    stampG(A, Geq, this.n1, this.n2);
+    stampI(b, Ieq, this.n1, this.n2);
+  }
+  updateState(V) {
+    const v1 = this.n1>0 ? V[this.n1-1] : 0;
+    const v2 = this.n2>0 ? V[this.n2-1] : 0;
+    const Vnew = v1-v2;
+    const Geq  = this._dt/(2*this.L);
+    // I_new = Geq*Vnew + Ieq
+    this.Iold  = Geq*Vnew + (this.Iold + Geq*this.Vold);
+    this.Vold  = Vnew;
+  }
+}
+
+class VoltageSource {
+  constructor(id, nPlus, nMinus, V) {
+    this.id = id; this.nPlus = nPlus; this.nMinus = nMinus;
+    this.V = V; this.type = 'VS'; this.isNonlinear = false;
+    this.branchIdx = -1; // assigned by buildSolver()
+    this.displayOffX = 0; this.displayOffY = 0;
+  }
+  get n1() { return this.nPlus; }
+  get n2() { return this.nMinus; }
+  setInitialV(V) {}
+  _stamp(A, b, nN) {
+    const k = nN + this.branchIdx;
+    if (this.nPlus  > 0) { A[k][this.nPlus-1]  += 1; A[this.nPlus-1][k]  += 1; }
+    if (this.nMinus > 0) { A[k][this.nMinus-1] -= 1; A[this.nMinus-1][k] -= 1; }
+    b[k] += this.V;
+  }
+  stampDC(A, b, nN)       { this._stamp(A, b, nN); }
+  stampTran(A, b, nN, dt) { this._stamp(A, b, nN); }
+  updateState(V) {}
+}
+
+class Diode {
+  constructor(id, nA, nK) {
+    this.id = id; this.nA = nA; this.nK = nK;
+    this.type = 'D'; this.isNonlinear = true;
+    this.Is = 1e-12; this.Vt = 0.02585;
+    this.Vd = 0.0; // operating point
+    this.displayOffX = 0; this.displayOffY = 0;
+  }
+  get n1() { return this.nA; }
+  get n2() { return this.nK; }
+  setInitialV(V) { this.updateOp(V); }
+  updateOp(V) {
+    const vA = this.nA>0 ? (V[this.nA-1]??0) : 0;
+    const vK = this.nK>0 ? (V[this.nK-1]??0) : 0;
+    this.Vd = vA-vK;
+  }
+  updateState(V) { this.updateOp(V); }
+  _companions() {
+    // Clamp to prevent exp overflow
+    const Vc = Math.min(this.Vd, 0.7);
+    const exp = Math.exp(Vc/this.Vt);
+    const Id  = this.Is*(exp - 1);
+    const Gd  = this.Is/this.Vt * exp;
+    const Ieq = Id - Gd*Vc; // linearization offset
+    return {Gd, Ieq};
+  }
+  _doStamp(A, b) {
+    const {Gd, Ieq} = this._companions();
+    stampG(A, Gd, this.nA, this.nK);
+    // companion current source: Ieq flows from nA to nK (internal device direction)
+    if (this.nA>0) b[this.nA-1] -= Ieq;
+    if (this.nK>0) b[this.nK-1] += Ieq;
+  }
+  stampDC(A, b, nN)       { this._doStamp(A, b); }
+  stampTran(A, b, nN, dt) { this._doStamp(A, b); }
+}
+
+// ===================================================================
+// CIRCUIT STATE
+// ===================================================================
+
+let components    = [];
+let nextId        = 1;
+let addMode       = null;
+let pendingNode   = null;
+let selectedComp  = null;
+let nodePositions = {}; // nodeId → {xr, yr}
+let simResults    = []; // [{t, V[]}]
+
+function buildSolver() {
+  let maxNode = 0;
+  let vsCount = 0;
+  for (const c of components) {
+    const ns = c.type === 'VS' ? [c.nPlus, c.nMinus] : [c.n1, c.n2];
+    for (const n of ns) if (n > maxNode) maxNode = n;
+    if (c.type === 'VS') { c.branchIdx = vsCount++; }
+  }
+  return new MNASolver(maxNode, vsCount);
+}
+
+// ── Triple-tap to split a node ───────────────────────────────────────
+
+function resetNodeTap() {
+  clearTimeout(nodeTapTimer);
+  nodeTapId = null; nodeTapCount = 0; nodeTapTimer = null;
+}
+
+function handleNodeTap(nodeId) {
+  if (nodeTapId !== nodeId) { resetNodeTap(); nodeTapId = nodeId; }
+  clearTimeout(nodeTapTimer);
+  nodeTapCount++;
+  if (nodeTapCount >= 3) { resetNodeTap(); splitNode(nodeId); return; }
+  const label = nodeId === 0 ? 'GND' : 'N' + nodeId;
+  msg(`${label} — tap ${3 - nodeTapCount}× more to split node`, 'info');
+  nodeTapTimer = setTimeout(resetNodeTap, TRIPLE_TAP_MS);
+}
+
+function splitNode(nodeId) {
+  const conn = components.filter(c => c.n1 === nodeId || c.n2 === nodeId);
+  if (conn.length <= 1) {
+    msg('Node has only 1 connection — nothing to split.', 'info');
+    return;
+  }
+
+  const orig = nodePositions[nodeId];
+  let nextNewId = Math.max(...Object.keys(nodePositions).map(Number), 0) + 1;
+
+  // Keep the first component on the original node.
+  // Each remaining component gets its own fresh node placed in a circle.
+  const RADIUS = 0.09; // relative-unit spread radius
+  for (let i = 1; i < conn.length; i++) {
+    const angle = (i / conn.length) * Math.PI * 2;
+    const newId = nextNewId++;
+    nodePositions[newId] = {
+      xr: Math.max(0.03, Math.min(0.97, orig.xr + RADIUS * Math.cos(angle))),
+      yr: Math.max(0.03, Math.min(0.97, orig.yr + RADIUS * Math.sin(angle)))
+    };
+    const c = conn[i];
+    if (c.type === 'VS') {
+      if (c.nPlus  === nodeId) c.nPlus  = newId;
+      if (c.nMinus === nodeId) c.nMinus = newId;
+    } else {
+      if (c.n1 === nodeId) c.n1 = newId;
+      if (c.n2 === nodeId) c.n2 = newId;
+    }
+  }
+
+  simResults = [];
+  recalcOffsets();
+  draw();
+  const label = nodeId === 0 ? 'GND' : 'N' + nodeId;
+  msg(`${label} split into ${conn.length} nodes. Drag to rearrange.`, 'info');
+}
+
+/**
+ * Spread parallel components (same node pair) perpendicular to their wire
+ * so they never draw on top of each other.
+ */
+function recalcOffsets() {
+  const SPREAD_PX = 44; // visual gap between parallel branches in CSS pixels
+
+  // Group components by sorted node pair
+  const groups = {};
+  for (const c of components) {
+    const key = `${Math.min(c.n1,c.n2)},${Math.max(c.n1,c.n2)}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(c);
+  }
+
+  const w = W(), h = H();
+
+  for (const group of Object.values(groups)) {
+    if (group.length === 1) {
+      group[0].displayOffX = 0; group[0].displayOffY = 0;
+      continue;
+    }
+
+    const p1 = nodePositions[group[0].n1];
+    const p2 = nodePositions[group[0].n2];
+    if (!p1 || !p2) {
+      for (const c of group) { c.displayOffX = 0; c.displayOffY = 0; }
+      continue;
+    }
+
+    // Wire vector in CSS px
+    const dx = (p2.xr - p1.xr) * w;
+    const dy = (p2.yr - p1.yr) * h;
+    const len = Math.hypot(dx, dy);
+
+    if (len < 1) {
+      for (const c of group) { c.displayOffX = 0; c.displayOffY = 0; }
+      continue;
+    }
+
+    // Perpendicular unit vector (90° CCW), then convert back to relative coords
+    const px = -dy / len, py = dx / len;
+    const n = group.length;
+    for (let i = 0; i < n; i++) {
+      const t = (i - (n - 1) / 2) * SPREAD_PX;
+      group[i].displayOffX = (px * t) / w;
+      group[i].displayOffY = (py * t) / h;
+    }
+  }
+}
+
+// ===================================================================
+// CANVAS + DRAWING
+// ===================================================================
+
+const canvas = document.getElementById('schematic');
+const ctx    = canvas.getContext('2d');
+
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  const dpr  = devicePixelRatio;
+  canvas.width  = wrap.clientWidth  * dpr;
+  canvas.height = wrap.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+const W = () => canvas.width  / devicePixelRatio;
+const H = () => canvas.height / devicePixelRatio;
+
+function toPx(xr, yr)   { return {x: xr*W(), y: yr*H()}; }
+function toRel(px, py)   { return {xr: px/W(), yr: py/H()}; }
+
+function draw() {
+  const w = W(), h = H();
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = '#161b22';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+
+  // Bus wires: short stub from node centre to offset component endpoint
+  ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 2; ctx.setLineDash([]);
+  for (const c of components) {
+    const ox = c.displayOffX||0, oy = c.displayOffY||0;
+    if (Math.hypot(ox, oy) < 1e-6) continue;
+    const p1 = nodePositions[c.n1], p2 = nodePositions[c.n2]; if (!p1||!p2) continue;
+    const nc = toPx(p1.xr,    p1.yr),    bc = toPx(p1.xr+ox, p1.yr+oy);
+    const gc = toPx(p2.xr,    p2.yr),    gb = toPx(p2.xr+ox, p2.yr+oy);
+    ctx.beginPath(); ctx.moveTo(nc.x, nc.y); ctx.lineTo(bc.x, bc.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(gc.x, gc.y); ctx.lineTo(gb.x, gb.y); ctx.stroke();
+  }
+
+  // Components
+  for (const c of components) {
+    const p1 = nodePositions[c.n1], p2 = nodePositions[c.n2]; if (!p1||!p2) continue;
+    const ox = c.displayOffX||0, oy = c.displayOffY||0;
+    drawComp(c, toPx(p1.xr+ox, p1.yr+oy), toPx(p2.xr+ox, p2.yr+oy), c === selectedComp);
+  }
+
+  // Nodes
+  for (const [idStr, pos] of Object.entries(nodePositions)) {
+    const id = parseInt(idStr), {x,y} = toPx(pos.xr, pos.yr);
+    if (id === 0) {
+      drawGnd(x, y);
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI*2);
+      ctx.fillStyle   = '#0d419d';
+      ctx.fill();
+      ctx.strokeStyle = pendingNode === id ? '#f0c040' : '#388bfd';
+      ctx.lineWidth   = pendingNode === id ? 3 : 2;
+      ctx.stroke();
+      ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 11px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`N${id}`, x, y);
+      if (simResults.length > 0) {
+        const V = simResults[simResults.length-1].V;
+        if (V[id-1] !== undefined) {
+          ctx.fillStyle = '#56d364'; ctx.font = '10px Courier New';
+          ctx.fillText(fmtV(V[id-1]), x, y+26);
+        }
+      }
+    }
+  }
+
+  // Drag highlight ring — drawn on top of everything
+  if (dragNodeId !== null) {
+    const dpos = nodePositions[dragNodeId];
+    if (dpos) {
+      const {x: dx, y: dy} = toPx(dpos.xr, dpos.yr);
+      ctx.beginPath();
+      ctx.arc(dx, dy, 22, 0, Math.PI*2);
+      ctx.strokeStyle = '#f0c040';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+
+function drawGnd(x, y) {
+  ctx.strokeStyle = '#388bfd'; ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    const ww = 20 - i*6;
+    ctx.beginPath(); ctx.moveTo(x-ww/2, y+i*5); ctx.lineTo(x+ww/2, y+i*5); ctx.stroke();
+  }
+  ctx.fillStyle = '#8b949e'; ctx.font = '10px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('GND', x, y+17);
+}
+
+function drawComp(c, a, b, selected) {
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const angle = Math.atan2(b.y-a.y, b.x-a.x);
+
+  // Wire
+  ctx.strokeStyle = selected ? '#f0c040' : '#30363d';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+
+  ctx.save();
+  ctx.translate(mx, my);
+  ctx.rotate(angle);
+
+  const SEL = selected ? '#f0c040' : null;
+
+  switch (c.type) {
+    case 'R': drawR(c, SEL); break;
+    case 'C': drawC(c, SEL); break;
+    case 'L': drawL(c, SEL); break;
+    case 'VS': drawVS(c, SEL); break;
+    case 'D': drawD(c, SEL); break;
+  }
+
+  ctx.restore();
+}
+
+function drawR(c, sel) {
+  ctx.fillStyle = '#1a1010';
+  ctx.strokeStyle = sel||'#e3b341'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(-18,-9,36,18,3); ctx.fill(); ctx.stroke();
+  ctx.rotate(0); // label stays upright
+  ctx.fillStyle = sel||'#e3b341'; ctx.font = 'bold 10px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('R', 0, 0);
+  // value label above
+  ctx.rotate(-Math.PI*0); // already 0
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.save(); ctx.rotate(-Math.atan2(0,1)*0);
+  // unrotate for label — rotate opposite to component angle
+  // We are already rotated, so rotate back
+  const ang = -Math.atan2(0,1); // zero, no-op — label is always above
+  ctx.restore();
+  // Draw label in un-rotated space
+  ctx.save();
+  ctx.rotate(-(arguments[2]||0));
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.fillText(fmtR(c.R), 0, -22);
+  ctx.restore();
+}
+
+function drawC(c, sel) {
+  ctx.strokeStyle = sel||'#56d364'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-18,0); ctx.lineTo(-5,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-5,-10); ctx.lineTo(-5,10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5,-10); ctx.lineTo(5,10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5,0); ctx.lineTo(18,0); ctx.stroke();
+  ctx.save(); ctx.rotate(-(arguments[2]||0));
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(fmtC(c.C), 0, -22);
+  ctx.restore();
+}
+
+function drawL(c, sel) {
+  // Coil: series of arcs
+  ctx.strokeStyle = sel||'#c39aff'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-20, 0);
+  for (let i = 0; i < 4; i++) {
+    const cx = -12 + i*8, r = 4;
+    ctx.arc(cx, 0, r, Math.PI, 0, false);
+  }
+  ctx.lineTo(20, 0); ctx.stroke();
+  ctx.save(); ctx.rotate(-(arguments[2]||0));
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(fmtL(c.L), 0, -22);
+  ctx.restore();
+}
+
+function drawVS(c, sel) {
+  ctx.strokeStyle = sel||'#ff7b72'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI*2); ctx.stroke();
+  ctx.fillStyle = '#1a0a0a'; ctx.fill();
+  // + and −
+  ctx.fillStyle = sel||'#ff7b72'; ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.save(); ctx.rotate(-Math.atan2(arguments[1]?.y||0, arguments[1]?.x||0)*0);
+  ctx.fillText('⚡', 0, 0);
+  ctx.restore();
+  ctx.save(); ctx.rotate(-(arguments[2]||0));
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(fmtVS(c.V), 0, -24);
+  // polarity hints
+  ctx.fillStyle = '#56d364'; ctx.font = 'bold 11px Courier New';
+  ctx.fillText('＋', -24, 0);
+  ctx.fillStyle = '#f85149';
+  ctx.fillText('－', 24, 0);
+  ctx.restore();
+}
+
+function drawD(c, sel) {
+  // Triangle + bar (standard diode symbol)
+  ctx.strokeStyle = sel||'#79c0ff'; ctx.fillStyle = '#0d2030';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-16, 0); ctx.lineTo(0, 0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(16, 0);
+  ctx.stroke();
+  // Triangle body (anode left, cathode right)
+  ctx.beginPath();
+  ctx.moveTo(-8, -9); ctx.lineTo(-8, 9); ctx.lineTo(8, 0); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Cathode bar
+  ctx.beginPath(); ctx.moveTo(8, -9); ctx.lineTo(8, 9); ctx.stroke();
+  ctx.save(); ctx.rotate(-(arguments[2]||0));
+  ctx.fillStyle = '#c9d1d9'; ctx.font = '10px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(`D${c.id}`, 0, -22);
+  ctx.restore();
+}
+
+// Fix drawR / drawL / drawC to not use bad argument references
+// The rotation un-rotate pattern re-uses the component angle stored via closure.
+// Cleaner: post-process label drawing happens AFTER ctx.restore() at the call site.
+// Let's override with proper implementations that capture the angle at drawComp time:
+
+function drawComp(c, a, b, selected) {
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const angle = Math.atan2(b.y-a.y, b.x-a.x);
+  const sel = selected ? '#f0c040' : null;
+
+  // Wire
+  ctx.strokeStyle = selected ? '#f0c040' : '#30363d';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+
+  ctx.save();
+  ctx.translate(mx, my);
+  ctx.rotate(angle);
+
+  switch (c.type) {
+    case 'R':  _drawBodyR(c, sel, angle);  break;
+    case 'C':  _drawBodyC(c, sel, angle);  break;
+    case 'L':  _drawBodyL(c, sel, angle);  break;
+    case 'VS': _drawBodyVS(c, sel, angle); break;
+    case 'D':  _drawBodyD(c, sel, angle);  break;
+  }
+
+  ctx.restore();
+}
+
+function _unrotLabel(angle, text, yOff, color) {
+  ctx.save();
+  ctx.rotate(-angle);
+  ctx.fillStyle = color||'#c9d1d9';
+  ctx.font = '10px Courier New';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, yOff);
+  ctx.restore();
+}
+
+function _drawBodyR(c, sel, angle) {
+  ctx.fillStyle = '#1a1010';
+  ctx.strokeStyle = sel||'#e3b341'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(-18,-9,36,18,3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = sel||'#e3b341'; ctx.font = 'bold 10px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('R', 0, 0);
+  _unrotLabel(angle, fmtR(c.R), -24);
+}
+
+function _drawBodyC(c, sel, angle) {
+  ctx.strokeStyle = sel||'#56d364'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-18,0); ctx.lineTo(-5,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-5,-10); ctx.lineTo(-5,10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5,-10); ctx.lineTo(5,10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5,0); ctx.lineTo(18,0); ctx.stroke();
+  _unrotLabel(angle, fmtC(c.C), -24);
+}
+
+function _drawBodyL(c, sel, angle) {
+  ctx.strokeStyle = sel||'#c39aff'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-20, 0);
+  for (let i = 0; i < 4; i++) ctx.arc(-12 + i*8, 0, 4, Math.PI, 0, false);
+  ctx.lineTo(20, 0); ctx.stroke();
+  _unrotLabel(angle, fmtL(c.L), -24);
+}
+
+function _drawBodyVS(c, sel, angle) {
+  ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI*2);
+  ctx.fillStyle = '#1a0a0a'; ctx.fill();
+  ctx.strokeStyle = sel||'#ff7b72'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = sel||'#ff7b72'; ctx.font = '13px Courier New';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('⚡', 0, 0);
+  _unrotLabel(angle, fmtVS(c.V), -28);
+  // polarity hints (small, un-rotated)
+  ctx.save(); ctx.rotate(-angle);
+  ctx.font = 'bold 10px Courier New'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#56d364'; ctx.textAlign = 'left';  ctx.fillText('＋', -28, 0);
+  ctx.fillStyle = '#f85149'; ctx.textAlign = 'right'; ctx.fillText('－', 28, 0);
+  ctx.restore();
+}
+
+function _drawBodyD(c, sel, angle) {
+  ctx.strokeStyle = sel||'#79c0ff'; ctx.lineWidth = 2;
+  // Leads
+  ctx.beginPath(); ctx.moveTo(-20,0); ctx.lineTo(-10,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(10,0);  ctx.lineTo(20,0);  ctx.stroke();
+  // Triangle anode(left)→cathode(right)
+  ctx.beginPath(); ctx.moveTo(-10,-9); ctx.lineTo(-10,9); ctx.lineTo(10,0); ctx.closePath();
+  ctx.fillStyle = '#0a1a2a'; ctx.fill(); ctx.stroke();
+  // Cathode bar
+  ctx.beginPath(); ctx.moveTo(10,-9); ctx.lineTo(10,9); ctx.stroke();
+  // Show Vd from last sim
+  const vd = (simResults.length>0 && c.nA>0)
+    ? ` ${fmtV(simResults[simResults.length-1].V[c.nA-1]-(c.nK>0?simResults[simResults.length-1].V[c.nK-1]:0))}` : '';
+  _unrotLabel(angle, `D${c.id}${vd}`, -24);
+}
+
+// ===================================================================
+// FORMATTING HELPERS
+// ===================================================================
+
+function fmtV(v) {
+  const a=Math.abs(v);
+  if (a>=1)     return v.toFixed(3)+'V';
+  if (a>=0.001) return (v*1e3).toFixed(2)+'mV';
+  return (v*1e6).toFixed(1)+'µV';
+}
+function fmtR(R) {
+  if (R>=1e6) return (R/1e6).toFixed(2)+'MΩ';
+  if (R>=1e3) return (R/1e3).toFixed(2)+'kΩ';
+  return R+'Ω';
+}
+function fmtC(C) {
+  if (C>=1e-3) return (C*1e3).toFixed(2)+'mF';
+  if (C>=1e-6) return (C*1e6).toFixed(2)+'µF';
+  if (C>=1e-9) return (C*1e9).toFixed(2)+'nF';
+  return (C*1e12).toFixed(1)+'pF';
+}
+function fmtL(L) {
+  if (L>=1)    return L.toFixed(2)+'H';
+  if (L>=1e-3) return (L*1e3).toFixed(2)+'mH';
+  return (L*1e6).toFixed(2)+'µH';
+}
+function fmtVS(V) {
+  if (Math.abs(V)>=1) return V.toFixed(2)+'V';
+  return (V*1e3).toFixed(1)+'mV';
+}
+
+// Parse value with unit suffix  e.g. "1k", "100u", "4.7m", "1M"
+function parseVal(s) {
+  const m = s.trim().replace(',','.').match(/^([0-9.]+)\s*([kKmMuUnNpPGg]?)([A-Za-zΩ]*)/);
+  if (!m) return NaN;
+  let v = parseFloat(m[1]);
+  switch (m[2]) {
+    case 'k': case 'K': v *= 1e3; break;
+    case 'M':           v *= 1e6; break;
+    case 'G':           v *= 1e9; break;
+    case 'm':           v *= 1e-3; break;
+    case 'u': case 'U': v *= 1e-6; break;
+    case 'n': case 'N': v *= 1e-9; break;
+    case 'p': case 'P': v *= 1e-12; break;
+  }
+  return v;
+}
+
+// ===================================================================
+// MESSAGE BAR
+// ===================================================================
+
+function msg(text, type='info') {
+  const bar = document.getElementById('msg-bar');
+  bar.textContent = text;
+  bar.className = type;
+}
+
+// ===================================================================
+// SIMULATION
+// ===================================================================
+
+function runSim() {
+  try {
+    if (components.length === 0) { msg('No components. Tap Clear to reload demo.','warn'); return; }
+
+    const solver = buildSolver();
+    if (solver.nNodes === 0) { msg('No non-ground nodes found.','error'); return; }
+
+    // Params
+    const dt   = 1e-6;
+    const tEnd = 5e-3;
+    const steps = Math.floor(tEnd/dt);
+
+    // Initial V (all zero)
+    let V = new Array(solver.size).fill(0);
+    for (const c of components) c.setInitialV(V);
+
+    simResults = [{t:0, V:[...V].slice(0,solver.nNodes)}];
+    const saveEvery = Math.max(1, Math.floor(steps/300));
+
+    for (let step=1; step<=steps; step++) {
+      let Vnew;
+      try {
+        Vnew = solver.solve(components, 'tran', dt);
+      } catch(e) {
+        msg('Solver error at step '+step+': '+e.message, 'error');
+        draw(); return;
+      }
+      for (const c of components) c.updateState(Vnew);
+      V = Vnew;
+      if (step % saveEvery === 0)
+        simResults.push({t:step*dt, V:[...Vnew].slice(0,solver.nNodes)});
+    }
+
+    const finalV = simResults[simResults.length-1].V;
+    const parts  = finalV.map((v,i) => `V(N${i+1})=${fmtV(v)}`).join('  ');
+    msg('✓ Done (t=5ms, '+steps+' steps). '+parts, 'success');
+    draw();
+  } catch(e) {
+    msg('Error: '+e.message, 'error');
+  }
+}
+
+// ===================================================================
+// EDIT PANEL
+// ===================================================================
+
+function openEdit(c) {
+  selectedComp = c;
+  const panel = document.getElementById('edit-panel');
+  const titles = {R:'Resistor',C:'Capacitor',L:'Inductor',VS:'Voltage Source',D:'Diode'};
+  const labels = {R:'Resistance (Ω, kΩ, MΩ)',C:'Capacitance (F, µF, nF, pF)',
+                  L:'Inductance (H, mH, µH)',VS:'Voltage (V, mV)',D:'(no value — Is=1pA, Vt=26mV)'};
+  const vals   = {R:fmtR(c.R),C:fmtC(c.C),L:fmtL(c.L),VS:fmtVS(c.V),D:'—'};
+  document.getElementById('ep-title').textContent = `${titles[c.type]||c.type} #${c.id}`;
+  document.getElementById('ep-label').textContent = labels[c.type]||'Value';
+  document.getElementById('ep-input').value       = vals[c.type]||'';
+  document.getElementById('ep-input').disabled    = c.type==='D';
+  panel.style.display = 'block';
+  draw();
+}
+
+function closeEdit() {
+  selectedComp = null;
+  document.getElementById('edit-panel').style.display = 'none';
+  draw();
+}
+
+function applyEdit() {
+  if (!selectedComp) return;
+  const raw = document.getElementById('ep-input').value;
+  const v   = parseVal(raw);
+  if (isNaN(v) || v <= 0) { msg('Invalid value: '+raw, 'error'); return; }
+  const c = selectedComp;
+  switch (c.type) {
+    case 'R':  c.R = v;  break;
+    case 'C':  c.C = v;  break;
+    case 'L':  c.L = v;  break;
+    case 'VS': c.V = v;  break;
+  }
+  simResults = [];
+  msg(`${c.type}#${c.id} updated. Tap ▶ Run Sim.`, 'info');
+  closeEdit();
+}
+
+function deleteSelected() {
+  if (!selectedComp) return;
+  components = components.filter(c => c !== selectedComp);
+  simResults = [];
+  recalcOffsets();
+  msg('Component deleted.', 'info');
+  closeEdit();
+}
+
+// ===================================================================
+// UI ACTIONS
+// ===================================================================
+
+function startAdd(type) {
+  addMode     = (addMode===type) ? null : type;
+  pendingNode = null;
+  selectedComp = null;
+  document.getElementById('edit-panel').style.display = 'none';
+  updateBtns();
+  const names = {R:'Resistor (1kΩ)',C:'Capacitor (1µF)',L:'Inductor (1mH)',VS:'Voltage Source (5V)',D:'Diode'};
+  if (addMode) msg(`Tap node 1 for ${names[addMode]}. Tap empty space = new node.`, 'info');
+  else msg('Mode cancelled.','info');
+  draw();
+}
+
+function clearCircuit() {
+  loadDemo(); addMode=null; pendingNode=null; selectedComp=null; simResults=[];
+  document.getElementById('edit-panel').style.display='none';
+  updateBtns();
+  msg('Demo circuit loaded (V-source + RC). Tap ▶ Run Sim.','info');
+  draw();
+}
+
+function updateBtns() {
+  ['R','C','L','VS','D'].forEach(t => {
+    const b = document.getElementById('btn-'+t);
+    if (b) b.className = addMode===t ? 'active' : '';
+  });
+}
+
+// ===================================================================
+// DEMO CIRCUIT
+// ===================================================================
+
+function loadDemo() {
+  components    = [];
+  nodePositions = {};
+  nextId        = 1;
+
+  // Demo: V-source 5V → R 1kΩ → C 1µF → GND
+  // Node layout: GND(bottom), N1(top-left, VS+), N2(top-right, RC junction)
+  nodePositions[0] = {xr:0.50, yr:0.76};  // GND center-bottom
+  nodePositions[1] = {xr:0.25, yr:0.28};  // N1: VS positive terminal
+  nodePositions[2] = {xr:0.75, yr:0.28};  // N2: between R and C
+
+  // VS 5V: GND(0) → N1 (+ at N1)
+  const vs = new VoltageSource(nextId++, 1, 0, 5);
+  components.push(vs);
+
+  // R 1kΩ: N1 → N2
+  const r = new Resistor(nextId++, 1, 2, 1000);
+  components.push(r);
+
+  // C 1µF: N2 → GND
+  const c = new Capacitor(nextId++, 2, 0, 1e-6);
+  components.push(c);
+  recalcOffsets();
+}
+
+// ===================================================================
+// TOUCH / CLICK ON CANVAS
+// ===================================================================
+
+// ── Drag state ──────────────────────────────────────────────────────
+let dragNodeId    = null;   // node being dragged
+let dragDidMove   = false;  // became true once finger moved ≥ threshold
+let longPressTimer = null;  // setTimeout handle
+let touchOrigin   = null;   // {x,y} in canvas CSS px at touchstart
+let snapTarget    = null;   // reserved for future snap-to-merge
+
+// Triple-tap-to-split state
+let nodeTapId    = null;
+let nodeTapCount = 0;
+let nodeTapTimer = null;
+const TRIPLE_TAP_MS = 650;
+
+const LONG_PRESS_MS  = 350; // ms hold before drag activates
+const DRAG_START_PX  = 10;  // px finger can drift before cancelling long-press
+const NODE_HIT_PX    = 28;  // px radius for node hit-test
+const SNAP_MERGE_PX  = 44;  // px radius for snap-to-merge detection
+
+// ── Coordinate helpers ───────────────────────────────────────────────
+
+function clientToRel(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return toRel(clientX - rect.left, clientY - rect.top);
+}
+
+function getPointerFromEvent(e) {
+  if (e.touches && e.touches.length > 0)
+    return {cx: e.touches[0].clientX,        cy: e.touches[0].clientY};
+  if (e.changedTouches && e.changedTouches.length > 0)
+    return {cx: e.changedTouches[0].clientX, cy: e.changedTouches[0].clientY};
+  return {cx: e.clientX, cy: e.clientY};
+}
+
+function getPos(e) {
+  const {cx, cy} = getPointerFromEvent(e);
+  return clientToRel(cx, cy);
+}
+
+// Hit-test: return nearest nodeId within NODE_HIT_PX, else null
+function findNode(xr, yr) {
+  const w = W(), h = H();
+  let best = null, bestD = Infinity;
+  for (const [id, pos] of Object.entries(nodePositions)) {
+    const dx = (pos.xr - xr) * w;
+    const dy = (pos.yr - yr) * h;
+    const d  = Math.hypot(dx, dy);
+    if (d < bestD) { bestD = d; best = parseInt(id); }
+  }
+  return bestD <= NODE_HIT_PX ? best : null;
+}
+
+function findComponent(xr, yr, thr=0.07) {
+  let best=null, bestD=Infinity;
+  for (const c of components) {
+    const p1=nodePositions[c.n1], p2=nodePositions[c.n2]; if (!p1||!p2) continue;
+    const ox=c.displayOffX||0, oy=c.displayOffY||0;
+    const mx=(p1.xr+ox + p2.xr+ox)/2, my=(p1.yr+oy + p2.yr+oy)/2;
+    const d = Math.hypot(mx-xr, my-yr);
+    if (d<bestD) { bestD=d; best=c; }
+  }
+  return bestD<thr ? best : null;
+}
+
+// ── Long-press drag ──────────────────────────────────────────────────
+
+function cancelLongPress() {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+}
+
+function startDrag(nodeId) {
+  dragNodeId  = nodeId;
+  dragDidMove = false;
+  simResults  = [];
+  closeEdit();
+  draw(); // initial highlight
+  msg(`Dragging ${nodeId===0?'GND':'N'+nodeId} — release to drop.`, 'info');
+}
+
+function drawDragHighlight(nodeId) {
+  if (nodeId === null) return;
+  const pos = nodePositions[nodeId]; if (!pos) return;
+  const {x, y} = toPx(pos.xr, pos.yr);
+  // Pulsing ring
+  ctx.beginPath();
+  ctx.arc(x, y, 20, 0, Math.PI*2);
+  ctx.strokeStyle = '#f0c040';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([5, 3]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ── Touch event handlers ─────────────────────────────────────────────
+
+function onTouchStart(e) {
+  // Only handle single-finger touches
+  if (e.touches.length !== 1) { cancelLongPress(); return; }
+  e.preventDefault();
+
+  const {cx, cy} = getPointerFromEvent(e);
+  touchOrigin = {x: cx, y: cy};
+  dragDidMove = false;
+
+  // Only start long-press when NOT in add mode
+  if (addMode) return;
+
+  const {xr, yr} = clientToRel(cx, cy);
+  const hitNode = findNode(xr, yr);
+  if (hitNode === null) return; // no node nearby — don't start timer
+
+  cancelLongPress();
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null;
+    startDrag(hitNode);
+  }, LONG_PRESS_MS);
+}
+
+function onTouchMove(e) {
+  if (e.touches.length !== 1) return;
+  e.preventDefault();
+
+  const {cx, cy} = getPointerFromEvent(e);
+
+  // Cancel long-press if finger drifted too far before timer fired
+  if (longPressTimer && touchOrigin) {
+    const dx = cx - touchOrigin.x, dy = cy - touchOrigin.y;
+    if (Math.hypot(dx, dy) > DRAG_START_PX) cancelLongPress();
+  }
+
+  // Live drag update
+  if (dragNodeId !== null) {
+    dragDidMove = true;
+    const {xr, yr} = clientToRel(cx, cy);
+    nodePositions[dragNodeId] = {
+      xr: Math.max(0.03, Math.min(0.97, xr)),
+      yr: Math.max(0.03, Math.min(0.97, yr))
+    };
+    recalcOffsets();
+    draw();
+  }
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  cancelLongPress();
+
+  if (dragNodeId !== null) {
+    const moved = dragDidMove;
+    dragNodeId = null;
+    dragDidMove = false;
+    draw();
+    if (moved) {
+      msg('Node moved. Tap ▶ Run Sim to re-simulate.', 'info');
+      return; // don't fire tap logic after a drag
+    }
+    // If long-press was confirmed but finger didn't move: treat as tap
+  }
+
+  // ── Normal tap logic ─────────────────────────────────────────────
+  const {xr, yr} = getPos(e);
+
+  if (!addMode) {
+    const hitN = findNode(xr, yr);
+    if (hitN !== null) { handleNodeTap(hitN); return; }
+    const found = findComponent(xr, yr);
+    if (found) { openEdit(found); return; }
+    closeEdit();
+    return;
+  }
+
+  let tapped = findNode(xr, yr);
+  if (tapped === null) {
+    const ids = Object.keys(nodePositions).map(Number);
+    const newId = Math.max(...ids) + 1;
+    nodePositions[newId] = {xr, yr};
+    tapped = newId;
+  }
+
+  if (pendingNode === null) {
+    pendingNode = tapped;
+    msg(`Node ${tapped===0?'GND':'N'+tapped} selected. Tap terminal 2.`, 'info');
+    draw();
+  } else {
+    const n1=pendingNode, n2=tapped; pendingNode=null;
+    if (n1===n2) { msg('Same node — cancelled.','warn'); draw(); return; }
+
+    let newComp;
+    switch (addMode) {
+      case 'R':  newComp = new Resistor(nextId++, n1, n2, 1000);   break;
+      case 'C':  newComp = new Capacitor(nextId++, n1, n2, 1e-6);  break;
+      case 'L':  newComp = new Inductor(nextId++, n1, n2, 1e-3);   break;
+      case 'VS': newComp = new VoltageSource(nextId++, n1, n2, 5); break;
+      case 'D':  newComp = new Diode(nextId++, n1, n2);             break;
+    }
+    components.push(newComp);
+    simResults = [];
+    recalcOffsets();
+    const names = {R:'Resistor 1kΩ',C:'Capacitor 1µF',L:'Inductor 1mH',VS:'V Source 5V',D:'Diode'};
+    msg(`${names[addMode]} added (N${n1}↔N${n2}). Hold & drag nodes to reposition. Tap ▶ Run Sim.`, 'info');
+    addMode=null; updateBtns(); draw();
+  }
+}
+
+// ── Mouse fallback for desktop testing ──────────────────────────────
+
+let mouseDragging = false;
+
+function onMouseDown(e) {
+  if (addMode) return;
+  const {xr, yr} = getPos(e);
+  const hitNode = findNode(xr, yr);
+  if (hitNode === null) return;
+  mouseDragging = true;
+  startDrag(hitNode);
+}
+
+function onMouseMove(e) {
+  if (!mouseDragging || dragNodeId === null) return;
+  dragDidMove = true;
+  const {xr, yr} = getPos(e);
+  nodePositions[dragNodeId] = {
+    xr: Math.max(0.03, Math.min(0.97, xr)),
+    yr: Math.max(0.03, Math.min(0.97, yr))
+  };
+  recalcOffsets();
+  draw();
+}
+
+function onMouseUp(e) {
+  if (!mouseDragging) return;
+  mouseDragging = false;
+  const moved = dragDidMove;
+  dragNodeId   = null;
+  dragDidMove  = false;
+  draw();
+  if (moved) { msg('Node moved. Tap ▶ Run Sim to re-simulate.', 'info'); return; }
+
+  // Tap fallback (no drag)
+  const {xr, yr} = getPos(e);
+  if (!addMode) {
+    const hitN = findNode(xr, yr);
+    if (hitN !== null) { handleNodeTap(hitN); return; }
+    const found = findComponent(xr, yr);
+    if (found) { openEdit(found); return; }
+    closeEdit();
+  }
+}
+
+// ── Event listeners ──────────────────────────────────────────────────
+
+canvas.addEventListener('touchstart', onTouchStart, {passive: false});
+canvas.addEventListener('touchmove',  onTouchMove,  {passive: false});
+canvas.addEventListener('touchend',   onTouchEnd,   {passive: false});
+
+canvas.addEventListener('mousedown',  onMouseDown);
+window.addEventListener('mousemove',  onMouseMove);
+window.addEventListener('mouseup',    onMouseUp);
+
+window.addEventListener('resize', () => { ctx.setTransform(1,0,0,1,0,0); resize(); });
+
+// ===================================================================
+// BOOT
+// ===================================================================
+
+loadDemo();
+resize();
+msg('Demo: V-source 5V → R 1kΩ → C 1µF → GND. C charges to 5V (τ=1ms). Tap ▶ Run Sim.','info');
+</script>
+</body>
+</html>
